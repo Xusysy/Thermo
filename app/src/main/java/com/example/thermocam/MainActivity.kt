@@ -43,7 +43,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private val registerInfo = HashMap<String, String>()
     private val eventCount = HashMap<String, Int>()
     private val lastValues = HashMap<String, String>()
-    private val lastTemp = HashMap<String, Float>()
+    private val lastArr = HashMap<String, FloatArray>()
+    private var valueIndex = 0
 
     private var yaw = 0f
     private var pitch = 0f
@@ -94,6 +95,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         sensorsButton.text = "Датчики"
         sensorsButton.setOnClickListener { showSensors() }
 
+        val channelButton = Button(this)
+        channelButton.text = "Канал: 0"
+        channelButton.setOnClickListener {
+            valueIndex = (valueIndex + 1) % 3
+            channelButton.text = "Канал: $valueIndex"
+            thermalOverlay.clear()
+        }
+
         val bar = LinearLayout(this)
         bar.orientation = LinearLayout.HORIZONTAL
         bar.gravity = Gravity.CENTER
@@ -101,6 +110,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         bar.addView(modeButton)
         bar.addView(clearButton)
         bar.addView(sensorsButton)
+        bar.addView(channelButton)
 
         val root = FrameLayout(this)
         root.addView(
@@ -199,18 +209,18 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         val k = key(sensor)
         eventCount[k] = (eventCount[k] ?: 0) + 1
         lastValues[k] = values.take(3).joinToString(",") { String.format("%.2f", it) }
-        if (values.isNotEmpty()) {
-            var v = values[0]
-            // Если значение похоже на кельвины, переводим в цельсии
-            if (v > 200f) v -= 273.15f
-            lastTemp[k] = v
-        }
+        lastArr[k] = values.copyOf()
     }
 
     private fun currentTemp(): Float? {
         for (s in firSensors) {
-            val t = lastTemp[key(s)]
-            if (t != null) return t
+            val a = lastArr[key(s)]
+            if (a != null && valueIndex < a.size) {
+                var v = a[valueIndex]
+                // Если значение похоже на кельвины, переводим в цельсии
+                if (v > 200f) v -= 273.15f
+                return v
+            }
         }
         return null
     }
