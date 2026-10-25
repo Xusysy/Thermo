@@ -30,7 +30,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     private lateinit var sensorManager: SensorManager
     private lateinit var previewView: PreviewView
-    private lateinit var overlay: ThermalOverlayView
+    private lateinit var thermalOverlay: ThermalOverlayView
     private lateinit var modeButton: Button
 
     private var tempSensor: Sensor? = null
@@ -54,7 +54,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         tempSensor = findTemperatureSensor()
 
         previewView = PreviewView(this)
-        overlay = ThermalOverlayView(this).apply { demo = tempSensor == null }
+        thermalOverlay = ThermalOverlayView(this).apply { demo = tempSensor == null }
 
         modeButton = Button(this).apply {
             text = "Режим: Измерение"
@@ -62,7 +62,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
         val clearButton = Button(this).apply {
             text = "Сброс"
-            setOnClickListener { overlay.clear() }
+            setOnClickListener { thermalOverlay.clear() }
         }
         val sensorsButton = Button(this).apply {
             text = "Датчики"
@@ -87,7 +87,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 )
             )
             addView(
-                overlay,
+                thermalOverlay,
                 FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT
@@ -110,11 +110,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     }
 
     private fun toggleMode() {
-        if (overlay.mode == ThermalOverlayView.Mode.MEASURE) {
-            overlay.mode = ThermalOverlayView.Mode.HEATMAP
+        if (thermalOverlay.mode == ThermalOverlayView.Mode.MEASURE) {
+            thermalOverlay.mode = ThermalOverlayView.Mode.HEATMAP
             modeButton.text = "Режим: Тепловая карта"
         } else {
-            overlay.mode = ThermalOverlayView.Mode.MEASURE
+            thermalOverlay.mode = ThermalOverlayView.Mode.MEASURE
             modeButton.text = "Режим: Измерение"
         }
     }
@@ -180,7 +180,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 val pitch = pitchSign * Math.toDegrees(orientation[1].toDouble()).toFloat()
 
                 val temp = if (tempSensor != null) lastRealTemp else demoTemp(yaw, pitch)
-                overlay.update(yaw, pitch, temp)
+                thermalOverlay.update(yaw, pitch, temp)
             }
             else -> {
                 if (event.sensor == tempSensor) lastRealTemp = event.values[0]
