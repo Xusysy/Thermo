@@ -32,6 +32,7 @@ class ThermalOverlayView(context: Context) : View(context) {
     private var pitch = 0f
     private var currentTemp: Float? = null
     var demo = false
+    var debug: String = ""
 
     private val cells = HashMap<Long, Float>()
 
@@ -132,6 +133,13 @@ class ThermalOverlayView(context: Context) : View(context) {
         }
         if (mode == Mode.HEATMAP) {
             canvas.drawText("Води телефоном по объекту, карта заполнится", 30f, 170f, smallText)
+        }
+        if (debug.isNotEmpty()) {
+            var ty = 230f
+            for (line in debug.split("\n")) {
+                canvas.drawText(line, 30f, ty, smallText)
+                ty += 44f
+            }
         }
     }
 

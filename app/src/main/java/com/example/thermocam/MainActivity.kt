@@ -9,6 +9,8 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.hardware.TriggerEvent
+import android.hardware.TriggerEventListener
 import android.os.Bundle
 import android.view.Gravity
 import android.view.ViewGroup
@@ -33,8 +35,18 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private lateinit var thermalOverlay: ThermalOverlayView
     private lateinit var modeButton: Button
 
-    private var tempSensor: Sensor? = null
-    private var lastRealTemp: Float? = null
+    // Все найденные ИК-датчики (fir_temperature, fir_extended_temperature)
+    private var firSensors: List<Sensor> = emptyList()
+    private var hasRealSensor = false
+
+    // Диагностика по каждому датчику
+    private val registerInfo = HashMap<String, String>()
+    private val eventCount = HashMap<String, Int>()
+    private val lastValues = HashMap<String, String>()
+    private val lastTemp = HashMap<String, Float>()
+
+    private var yaw = 0f
+    private var pitch = 0f
 
     private val rotationMatrix = FloatArray(9)
     private val remapped = FloatArray(9)
@@ -48,60 +60,68 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             if (granted) startCamera()
         }
 
+    // Для датчиков с одноразовым режимом (one-shot)
+    private val triggerListener = object : TriggerEventListener() {
+        override fun onTrigger(event: TriggerEvent) {
+            handleValues(event.sensor, event.values)
+            // Запрашиваем следующее измерение
+            sensorManager.requestTriggerSensor(this, event.sensor)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
-        tempSensor = findTemperatureSensor()
+        firSensors = findFirSensors()
+        hasRealSensor = firSensors.isNotEmpty()
 
         previewView = PreviewView(this)
-        thermalOverlay = ThermalOverlayView(this).apply { demo = tempSensor == null }
+        thermalOverlay = ThermalOverlayView(this)
+        thermalOverlay.demo = !hasRealSensor
 
-        modeButton = Button(this).apply {
-            text = "Режим: Измерение"
-            setOnClickListener { toggleMode() }
-        }
-        val clearButton = Button(this).apply {
-            text = "Сброс"
-            setOnClickListener { thermalOverlay.clear() }
-        }
-        val sensorsButton = Button(this).apply {
-            text = "Датчики"
-            setOnClickListener { showSensors() }
-        }
+        modeButton = Button(this)
+        modeButton.text = "Режим: Измерение"
+        modeButton.setOnClickListener { toggleMode() }
 
-        val bar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            setBackgroundColor(Color.argb(120, 0, 0, 0))
-            addView(modeButton)
-            addView(clearButton)
-            addView(sensorsButton)
-        }
+        val clearButton = Button(this)
+        clearButton.text = "Сброс"
+        clearButton.setOnClickListener { thermalOverlay.clear() }
 
-        val root = FrameLayout(this).apply {
-            addView(
-                previewView,
-                FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
-                )
+        val sensorsButton = Button(this)
+        sensorsButton.text = "Датчики"
+        sensorsButton.setOnClickListener { showSensors() }
+
+        val bar = LinearLayout(this)
+        bar.orientation = LinearLayout.HORIZONTAL
+        bar.gravity = Gravity.CENTER
+        bar.setBackgroundColor(Color.argb(120, 0, 0, 0))
+        bar.addView(modeButton)
+        bar.addView(clearButton)
+        bar.addView(sensorsButton)
+
+        val root = FrameLayout(this)
+        root.addView(
+            previewView,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
             )
-            addView(
-                thermalOverlay,
-                FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
-                )
+        )
+        root.addView(
+            thermalOverlay,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
             )
-            addView(
-                bar,
-                FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    Gravity.BOTTOM
-                )
+        )
+        root.addView(
+            bar,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM
             )
-        }
+        )
         setContentView(root)
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
@@ -131,23 +151,72 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }, ContextCompat.getMainExecutor(this))
     }
 
-    /** Ищем датчик температуры объекта (ИК-термометр) среди всех датчиков устройства. */
-    private fun findTemperatureSensor(): Sensor? {
+    /** Ищем ИК-термометры среди всех датчиков. Основной (fir_temperature) идёт первым. */
+    private fun findFirSensors(): List<Sensor> {
         val all = sensorManager.getSensorList(Sensor.TYPE_ALL)
-        return all.firstOrNull {
+        val fir = all.filter {
             val s = (it.name + " " + it.stringType).lowercase()
-            (s.contains("thermo") || s.contains("object") || s.contains("infrared") || s.contains("mlx")) &&
-                it.type != Sensor.TYPE_AMBIENT_TEMPERATURE
+            s.contains("fir_temperature") || s.contains("fir_extended_temperature") ||
+                s.contains("mlx") || s.contains("infrared")
+        }
+        return fir.sortedBy { if (it.stringType.contains("extended")) 1 else 0 }
+    }
+
+    private fun modeName(s: Sensor): String = when (s.reportingMode) {
+        Sensor.REPORTING_MODE_CONTINUOUS -> "continuous"
+        Sensor.REPORTING_MODE_ON_CHANGE -> "on-change"
+        Sensor.REPORTING_MODE_ONE_SHOT -> "one-shot"
+        Sensor.REPORTING_MODE_SPECIAL_TRIGGER -> "special"
+        else -> "?"
+    }
+
+    private fun key(s: Sensor) = s.name
+
+    private fun debugText(): String {
+        if (firSensors.isEmpty()) return ""
+        val sb = StringBuilder()
+        for (s in firSensors) {
+            val k = key(s)
+            val short = if (s.stringType.contains("extended")) "EXT" else "FIR"
+            sb.append("$short ${modeName(s)} reg=${registerInfo[k] ?: "-"} ")
+            sb.append("n=${eventCount[k] ?: 0} v=${lastValues[k] ?: "-"}\n")
+        }
+        return sb.toString().trimEnd()
+    }
+
+    private fun handleValues(sensor: Sensor, values: FloatArray) {
+        val k = key(sensor)
+        eventCount[k] = (eventCount[k] ?: 0) + 1
+        lastValues[k] = values.take(3).joinToString(",") { String.format("%.2f", it) }
+        if (values.isNotEmpty()) {
+            var v = values[0]
+            // Если значение похоже на кельвины, переводим в цельсии
+            if (v > 200f) v -= 273.15f
+            lastTemp[k] = v
         }
     }
 
+    private fun currentTemp(): Float? {
+        for (s in firSensors) {
+            val t = lastTemp[key(s)]
+            if (t != null) return t
+        }
+        return null
+    }
+
     private fun showSensors() {
+        val header = StringBuilder()
+        header.append(debugText()).append("\n\n")
+        for (s in firSensors) {
+            header.append("${s.name}\n  type=${s.stringType}\n  mode=${modeName(s)} ")
+            header.append("minDelay=${s.minDelay} maxDelay=${s.maxDelay} range=${s.maximumRange}\n\n")
+        }
         val list = sensorManager.getSensorList(Sensor.TYPE_ALL)
             .joinToString("\n") { "${it.name}\n  ${it.stringType}" }
-        val found = tempSensor?.name ?: "не найден (работает демо-режим)"
+        val found = if (hasRealSensor) "найден" else "не найден (демо)"
         AlertDialog.Builder(this)
-            .setTitle("Термодатчик: $found")
-            .setMessage(list)
+            .setTitle("ИК-датчик: $found")
+            .setMessage(header.toString() + list)
             .setPositiveButton("OK", null)
             .show()
     }
@@ -157,34 +226,43 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)?.let {
             sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
         }
-        tempSensor?.let {
-            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+        for (s in firSensors) {
+            val k = key(s)
+            val ok = if (s.reportingMode == Sensor.REPORTING_MODE_ONE_SHOT) {
+                sensorManager.requestTriggerSensor(triggerListener, s)
+            } else {
+                sensorManager.registerListener(this, s, 200_000)
+            }
+            registerInfo[k] = if (ok) "ok" else "FAIL"
         }
     }
 
     override fun onPause() {
         super.onPause()
         sensorManager.unregisterListener(this)
+        for (s in firSensors) {
+            if (s.reportingMode == Sensor.REPORTING_MODE_ONE_SHOT) {
+                sensorManager.cancelTriggerSensor(triggerListener, s)
+            }
+        }
     }
 
     override fun onSensorChanged(event: SensorEvent) {
-        when (event.sensor.type) {
-            Sensor.TYPE_ROTATION_VECTOR -> {
-                SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
-                // Камера смотрит "в экран телефона насквозь" (вдоль -Z устройства)
-                SensorManager.remapCoordinateSystem(
-                    rotationMatrix, SensorManager.AXIS_X, SensorManager.AXIS_Z, remapped
-                )
-                SensorManager.getOrientation(remapped, orientation)
-                val yaw = Math.toDegrees(orientation[0].toDouble()).toFloat()
-                val pitch = pitchSign * Math.toDegrees(orientation[1].toDouble()).toFloat()
+        if (event.sensor.type == Sensor.TYPE_ROTATION_VECTOR) {
+            SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
+            // Камера смотрит "в экран телефона насквозь" (вдоль -Z устройства)
+            SensorManager.remapCoordinateSystem(
+                rotationMatrix, SensorManager.AXIS_X, SensorManager.AXIS_Z, remapped
+            )
+            SensorManager.getOrientation(remapped, orientation)
+            yaw = Math.toDegrees(orientation[0].toDouble()).toFloat()
+            pitch = pitchSign * Math.toDegrees(orientation[1].toDouble()).toFloat()
 
-                val temp = if (tempSensor != null) lastRealTemp else demoTemp(yaw, pitch)
-                thermalOverlay.update(yaw, pitch, temp)
-            }
-            else -> {
-                if (event.sensor == tempSensor) lastRealTemp = event.values[0]
-            }
+            val temp = if (hasRealSensor) currentTemp() else demoTemp(yaw, pitch)
+            thermalOverlay.debug = debugText()
+            thermalOverlay.update(yaw, pitch, temp)
+        } else {
+            handleValues(event.sensor, event.values)
         }
     }
 
