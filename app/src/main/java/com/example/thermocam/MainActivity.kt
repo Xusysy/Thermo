@@ -55,9 +55,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     // Если карта отображается зеркально по вертикали, поменяй на -1f
     private val pitchSign = 1f
 
+    private val firPermission = "com.google.sensor.permission.FAR_INFRARED_TEMPERATURE"
+
     private val permissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted) startCamera()
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+            if (result[Manifest.permission.CAMERA] == true) startCamera()
+            registerFirSensors()
         }
 
     // Для датчиков с одноразовым режимом (one-shot)
@@ -124,9 +127,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         )
         setContentView(root)
 
+        val needed = ArrayList<String>()
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
-        ) startCamera() else permissionLauncher.launch(Manifest.permission.CAMERA)
+        ) startCamera() else needed.add(Manifest.permission.CAMERA)
+        if (ContextCompat.checkSelfPermission(this, firPermission) !=
+            PackageManager.PERMISSION_GRANTED
+        ) needed.add(firPermission)
+        if (needed.isNotEmpty()) permissionLauncher.launch(needed.toTypedArray())
     }
 
     private fun toggleMode() {
@@ -175,6 +183,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private fun debugText(): String {
         if (firSensors.isEmpty()) return ""
         val sb = StringBuilder()
+        val perm = if (ContextCompat.checkSelfPermission(this, firPermission) ==
+            PackageManager.PERMISSION_GRANTED) "granted" else "DENIED"
+        sb.append("permission: $perm\n")
         for (s in firSensors) {
             val k = key(s)
             val short = if (s.stringType.contains("extended")) "EXT" else "FIR"
@@ -226,12 +237,16 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)?.let {
             sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
         }
+        registerFirSensors()
+    }
+
+    private fun registerFirSensors() {
         for (s in firSensors) {
             val k = key(s)
             val ok = if (s.reportingMode == Sensor.REPORTING_MODE_ONE_SHOT) {
                 sensorManager.requestTriggerSensor(triggerListener, s)
             } else {
-                sensorManager.registerListener(this, s, 200_000)
+                sensorManager.registerListener(this, s, 50_000)
             }
             registerInfo[k] = if (ok) "ok" else "FAIL"
         }
